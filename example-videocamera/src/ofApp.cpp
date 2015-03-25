@@ -30,8 +30,12 @@ void ofApp::draw(){
 void ofApp::keyPressed  (int key){
 
 	ofLogVerbose() << "keyPressed: " << key;
-	if (key == 'e') 
+	if (key == 'z') 
 	{
-        
+        camera.startRecording();
+    }
+    if (key == 'x') 
+    {
+        camera.stopRecording();
     }
 }

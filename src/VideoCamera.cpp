@@ -25,10 +25,13 @@ VideoCamera::VideoCamera()
     preview_port = NULL;
     wantPreview = true;
     hasClosed = false;
+    hasExitHandler = false;
+
 }
 
 void VideoCamera::setup()
 {
+    addExitHandler();
     create_camera_component();
     MMAL_STATUS_T status = videoPreview.setup();
     MMAL_TRACE(status);
@@ -58,7 +61,15 @@ void VideoCamera::setup()
 
 }
 
+void VideoCamera::startRecording()
+{
+    videoEncoder.startRecording();
+}
+void VideoCamera::stopRecording()
+{
+    videoEncoder.stopRecording();
 
+}
 
 /**
  *  buffer header callback function for camera control
@@ -116,9 +127,10 @@ MMAL_STATUS_T VideoCamera::create_camera_component()
     status = mmal_component_create(MMAL_COMPONENT_DEFAULT_CAMERA, &camera);
     MMAL_TRACE(status);
     
-    MMAL_PARAMETER_INT32_T camera_num =
-    {{MMAL_PARAMETER_CAMERA_NUM, sizeof(camera_num)}, cameraNum};
-    
+    MMAL_PARAMETER_INT32_T camera_num;
+    camera_num.hdr.id=MMAL_PARAMETER_CAMERA_NUM;
+    camera_num.hdr.size = sizeof(camera_num);
+    camera_num.value = cameraNum;
     status = mmal_port_parameter_set(camera->control, &camera_num.hdr);
     MMAL_TRACE(status);
     
@@ -134,9 +146,11 @@ MMAL_STATUS_T VideoCamera::create_camera_component()
     
     if (settings)
     {
-        MMAL_PARAMETER_CHANGE_EVENT_REQUEST_T change_event_request =
-        {{MMAL_PARAMETER_CHANGE_EVENT_REQUEST, sizeof(MMAL_PARAMETER_CHANGE_EVENT_REQUEST_T)},
-            MMAL_PARAMETER_CAMERA_SETTINGS, 1};
+        MMAL_PARAMETER_CHANGE_EVENT_REQUEST_T change_event_request;
+        change_event_request.hdr.id = MMAL_PARAMETER_CHANGE_EVENT_REQUEST;
+        change_event_request.hdr.size = sizeof(MMAL_PARAMETER_CHANGE_EVENT_REQUEST_T);
+        change_event_request.change_id = MMAL_PARAMETER_CAMERA_SETTINGS;
+        change_event_request.enable = true;
         
         status = mmal_port_parameter_set(camera->control, &change_event_request.hdr);
         MMAL_TRACE(status);
@@ -148,20 +162,19 @@ MMAL_STATUS_T VideoCamera::create_camera_component()
         
     //  set up the camera configuration
     {
-        MMAL_PARAMETER_CAMERA_CONFIG_T cam_config =
-        {
-            { MMAL_PARAMETER_CAMERA_CONFIG, sizeof(cam_config) },
-            .max_stills_w = width,
-            .max_stills_h = height,
-            .stills_yuv422 = 0,
-            .one_shot_stills = 0,
-            .max_preview_video_w = width,
-            .max_preview_video_h = height,
-            .num_preview_video_frames = 3,
-            .stills_capture_circular_buffer_height = 0,
-            .fast_preview_resume = 0,
-            .use_stc_timestamp = MMAL_PARAM_TIMESTAMP_MODE_RESET_STC
-        };
+        MMAL_PARAMETER_CAMERA_CONFIG_T cam_config;
+        cam_config.hdr.id = MMAL_PARAMETER_CAMERA_CONFIG;
+        cam_config.hdr.size = sizeof(cam_config);
+        cam_config.max_stills_w = width;
+        cam_config.max_stills_h = height;
+        cam_config.stills_yuv422 = 0;
+        cam_config.one_shot_stills = 0;
+        cam_config.max_preview_video_w = width;
+        cam_config.max_preview_video_h = height;
+        cam_config.num_preview_video_frames = 3;
+        cam_config.stills_capture_circular_buffer_height = 0;
+        cam_config.fast_preview_resume = 0,
+        cam_config.use_stc_timestamp = MMAL_PARAM_TIMESTAMP_MODE_RESET_STC;
         mmal_port_parameter_set(camera->control, &cam_config.hdr);
     }
     
@@ -222,14 +235,24 @@ MMAL_STATUS_T VideoCamera::create_camera_component()
     
     if(shutter_speed > 6000000)
     {
-        MMAL_PARAMETER_FPS_RANGE_T fps_range = {{MMAL_PARAMETER_FPS_RANGE, sizeof(fps_range)},
-            { 50, 1000 }, {166, 1000}};
+        MMAL_PARAMETER_FPS_RANGE_T fps_range;
+        fps_range.hdr.id = MMAL_PARAMETER_FPS_RANGE;
+        fps_range.hdr.size = sizeof(fps_range);
+        fps_range.fps_low.num = 50;
+        fps_range.fps_low.den = 1000;
+        fps_range.fps_high.num = 166;
+        fps_range.fps_high.den = 1000;
         mmal_port_parameter_set(video_port, &fps_range.hdr);
     }
     else if(shutter_speed > 1000000)
     {
-        MMAL_PARAMETER_FPS_RANGE_T fps_range = {{MMAL_PARAMETER_FPS_RANGE, sizeof(fps_range)},
-            { 167, 1000 }, {999, 1000}};
+        MMAL_PARAMETER_FPS_RANGE_T fps_range;
+        fps_range.hdr.id = MMAL_PARAMETER_FPS_RANGE;
+        fps_range.hdr.size = sizeof(fps_range);
+        fps_range.fps_low.num = 167;
+        fps_range.fps_low.den = 1000;
+        fps_range.fps_high.num = 999;
+        fps_range.fps_high.den = 1000;
         mmal_port_parameter_set(video_port, &fps_range.hdr);
     }
     
@@ -309,3 +332,67 @@ void VideoCamera::close()
     }
     hasClosed = true;
 }
+
+bool VideoCamera::doExit = false;
+
+void VideoCamera::signal_handler(int signum)
+{
+    cout << "VideoCamera caught signal " << signum;
+    VideoCamera::doExit = true;
+}
+
+inline
+void VideoCamera::onUpdateDuringExit(ofEventArgs& args)
+{
+    if (VideoCamera::doExit)
+    {
+        ofLogVerbose(__func__) << " EXITING VIA SIGNAL";
+        close();
+        ofExit();
+    }
+}
+
+inline
+void VideoCamera::addExitHandler()
+{
+    if(hasExitHandler) return;
+    
+    vector<int> signals;
+    signals.push_back(SIGINT);
+    signals.push_back(SIGQUIT);
+    
+    for (size_t i=0; i<signals.size(); i++)
+    {
+        int SIGNAL_TO_BLOCK = signals[i];
+        //http://stackoverflow.com/questions/11465148/using-sigaction-c-cpp
+        
+        //Struct for the new action associated to the SIGNAL_TO_BLOCK
+        struct sigaction new_action;
+        new_action.sa_handler = VideoCamera::signal_handler;
+        
+        //Empty the sa_mask. This means that no signal is blocked while the signal_handler runs.
+        sigemptyset(&new_action.sa_mask);
+        
+        //Block the SEGTERM signal so while the signal_handler runs, the SIGTERM signal is ignored
+        sigaddset(&new_action.sa_mask, SIGTERM);
+        
+        //Remove any flag from sa_flag. See documentation for flags allowed
+        new_action.sa_flags = 0;
+        
+        struct sigaction old_action;
+        //Read the old signal associated to SIGNAL_TO_BLOCK
+        sigaction(SIGNAL_TO_BLOCK, NULL, &old_action);
+        
+        //If the old handler wasn't SIG_IGN it is a handler that just "ignores" the signal
+        if (old_action.sa_handler != SIG_IGN)
+        {
+            //Replace the signal handler of SIGNAL_TO_BLOCK with the one described by new_action
+            sigaction(SIGNAL_TO_BLOCK, &new_action, NULL);
+        }
+        
+    }
+    
+    ofAddListener(ofEvents().update, this, &VideoCamera::onUpdateDuringExit);
+    hasExitHandler = true;
+}
+

@@ -68,4 +68,6 @@ private:
 	void addExitHandler();
     bool hasExitHandler;
     bool hasClosed;
+    static void signal_handler(int signum);
+    static bool doExit;
 };

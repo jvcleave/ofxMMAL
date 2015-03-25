@@ -19,21 +19,14 @@ VideoEncoder::VideoEncoder()
 
     immutableInput = 1;
     profile = MMAL_VIDEO_PROFILE_H264_HIGH;
-    waitMethod = 0;
     
-    bCapturing = 0;
-    bInlineHeaders = 0;
-    
-    segmentSize = 0;  // 0 = not segmenting the file.
-    segmentNumber = 1;
-    segmentWrap = 0; // Point at which to wrap segment number back to 1. 0 = no wrap
-    splitNow = 0;
-    splitWait = 0;
-    
-    inlineMotionVectors = 0;
+    inlineMotionVectors = false;
     bitrate = 17000000; // This is a decent default bitrate for 1080p
 
     intra_refresh_type = MMAL_VIDEO_INTRA_REFRESH_DUMMY;
+    videoFileName = ofGetTimestampString()+".h264";
+    isRecording = false;
+    doRecording = false;
 }
 
 
@@ -86,7 +79,11 @@ MMAL_STATUS_T VideoEncoder::setup()
     // Set the rate control parameter
     if (0)
     {
-        MMAL_PARAMETER_VIDEO_RATECONTROL_T param = {{ MMAL_PARAMETER_RATECONTROL, sizeof(param)}, MMAL_VIDEO_RATECONTROL_DEFAULT};
+        
+        MMAL_PARAMETER_VIDEO_RATECONTROL_T param;
+        param.hdr.id = MMAL_PARAMETER_RATECONTROL;
+        param.hdr.size = sizeof(param);
+        param.control = MMAL_VIDEO_RATECONTROL_DEFAULT;
         status = mmal_port_parameter_set(outputPort, &param.hdr);
         MMAL_TRACE(status);
 
@@ -95,7 +92,10 @@ MMAL_STATUS_T VideoEncoder::setup()
     
     if (intraperiod != -1)
     {
-        MMAL_PARAMETER_UINT32_T param = {{ MMAL_PARAMETER_INTRAPERIOD, sizeof(param)}, intraperiod};
+        MMAL_PARAMETER_UINT32_T param;
+        param.hdr.id = MMAL_PARAMETER_INTRAPERIOD;
+        param.hdr.size = sizeof(param);
+        param.value = intraperiod;
         status = mmal_port_parameter_set(outputPort, &param.hdr);
         MMAL_TRACE(status);
 
@@ -103,17 +103,25 @@ MMAL_STATUS_T VideoEncoder::setup()
     
     if (quantisationParameter)
     {
-        MMAL_PARAMETER_UINT32_T param = {{ MMAL_PARAMETER_VIDEO_ENCODE_INITIAL_QUANT, sizeof(param)}, quantisationParameter};
+        MMAL_PARAMETER_UINT32_T param;
+        param.hdr.id = MMAL_PARAMETER_VIDEO_ENCODE_INITIAL_QUANT;
+        param.hdr.size = sizeof(param);
+        param.value = quantisationParameter;
         status = mmal_port_parameter_set(outputPort, &param.hdr);
         MMAL_TRACE(status);
 
         
-        MMAL_PARAMETER_UINT32_T param2 = {{ MMAL_PARAMETER_VIDEO_ENCODE_MIN_QUANT, sizeof(param)}, quantisationParameter};
+        MMAL_PARAMETER_UINT32_T param2;
+        param2.hdr.id = MMAL_PARAMETER_VIDEO_ENCODE_MIN_QUANT;
+        param2.hdr.size = sizeof(param2);
+        param2.value = quantisationParameter;
         status = mmal_port_parameter_set(outputPort, &param2.hdr);
         MMAL_TRACE(status);
 
-        
-        MMAL_PARAMETER_UINT32_T param3 = {{ MMAL_PARAMETER_VIDEO_ENCODE_MAX_QUANT, sizeof(param)}, quantisationParameter};
+        MMAL_PARAMETER_UINT32_T param3;
+        param3.hdr.id = MMAL_PARAMETER_VIDEO_ENCODE_MAX_QUANT;
+        param3.hdr.size = sizeof(param3);
+        param3.value = quantisationParameter;
         status = mmal_port_parameter_set(outputPort, &param3.hdr);
         MMAL_TRACE(status);
 
@@ -132,12 +140,16 @@ MMAL_STATUS_T VideoEncoder::setup()
         MMAL_TRACE(status);
 
     }
-    status = mmal_port_parameter_set_boolean(inputPort, MMAL_PARAMETER_VIDEO_IMMUTABLE_INPUT, immutableInput);
+    status = mmal_port_parameter_set_boolean(inputPort, 
+                                             MMAL_PARAMETER_VIDEO_IMMUTABLE_INPUT, 
+                                             immutableInput);
     MMAL_TRACE(status);
     
     
     //set INLINE HEADER flag to generate SPS and PPS for every IDR if requested
-    status =  mmal_port_parameter_set_boolean(outputPort, MMAL_PARAMETER_VIDEO_ENCODE_INLINE_HEADER, bInlineHeaders);
+    status =  mmal_port_parameter_set_boolean(outputPort, 
+                                              MMAL_PARAMETER_VIDEO_ENCODE_INLINE_HEADER, 
+                                              inlineMotionVectors);
     MMAL_TRACE(status);
 
     //set INLINE VECTORS flag to request motion vector estimates
@@ -177,8 +189,6 @@ MMAL_STATUS_T VideoEncoder::setup()
         vcos_log_error("Failed to create buffer header pool for encoder output port %s", outputPort->name);
     }
     
-    outputPort = encoder->output[0];
-
     
     return status;
 
@@ -194,25 +204,18 @@ MMAL_STATUS_T VideoEncoder::setup()
  */
 void VideoEncoder::encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buffer)
 {
-    ofLogVerbose() << " ";
-    static int64_t base_time =  -1;
-    static int64_t last_second = -1;
-    
-    // All our segment times based on the receipt of the first encoder callback
-    if (base_time == -1)
-    {
-        base_time = vcos_getmicrosecs64()/1000;
-    }
     VideoEncoder* self = (VideoEncoder *)port->userdata;
-    if(self)
+    if(self && self->doRecording)
     {
-        int bytes_written = buffer->length;
-        int64_t current_time = vcos_getmicrosecs64()/1000;
         mmal_buffer_header_mem_lock(buffer);
         // We are pushing data into a circular buffer
         //memcpy(pData->cb_buff + pData->cb_wptr, buffer->data, copy_to_end);
         //memcpy(pData->cb_buff, buffer->data + copy_to_end, copy_to_start);
+        
+        self->fileBuffer.append((const char*)buffer->data, buffer->length);
+        
         mmal_buffer_header_mem_unlock(buffer);
+        ofLogVerbose() << self->fileBuffer.size();
         
     }
     mmal_buffer_header_release(buffer);
@@ -226,7 +229,7 @@ void VideoEncoder::encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER
         if (new_buffer)
         {
             status = mmal_port_send_buffer(port, new_buffer);
-            MMAL_TRACE(status);
+            //MMAL_TRACE(status);
         }
         
         if (!new_buffer || status != MMAL_SUCCESS)
@@ -235,7 +238,6 @@ void VideoEncoder::encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER
         }
      
     }
-    ofLogVerbose() << " ";
 }
 
 MMAL_STATUS_T VideoEncoder::enableOutputPort()
@@ -245,7 +247,6 @@ MMAL_STATUS_T VideoEncoder::enableOutputPort()
     MMAL_STATUS_T status = mmal_port_enable(outputPort, &VideoEncoder::encoder_buffer_callback);
     MMAL_TRACE(status);
     // Send all the buffers to the encoder output port
-    
     int num = mmal_queue_length(pool->queue);
     int q;
     for (q=0;q<num;q++)
@@ -256,7 +257,7 @@ MMAL_STATUS_T VideoEncoder::enableOutputPort()
         {
             ofLog(OF_LOG_ERROR, "Unable to get a required buffer %d from pool queue", q);
         }
-        status = mmal_port_send_buffer(outputPort, buffer);
+        MMAL_STATUS_T status = mmal_port_send_buffer(outputPort, buffer);
         MMAL_TRACE(status);
         if(status != MMAL_SUCCESS)
         {
@@ -265,14 +266,46 @@ MMAL_STATUS_T VideoEncoder::enableOutputPort()
     }
     return status;
 }
+void VideoEncoder::startRecording()
+{
+    doRecording = true;
+    if(!isRecording)
+    {
+        stringstream fileName;
+        fileName << ofGetTimestampString();
+        fileName << "_";
+        fileName << "bitrate_" << ofToString(bitrate);
+        videoFileName = fileName.str();
+        
+        isRecording = true;
+    }
+}
+bool VideoEncoder::stopRecording()
+{
+    doRecording = false;
+    isRecording = false;
+    string filePath = ofToDataPath(videoFileName+".h264", true);
+    bool didWrite = ofBufferToFile(filePath, fileBuffer);
+    if(didWrite)
+    {
+        ofLogVerbose(__func__) << "FILE SUCCESS filePath: " << filePath;
+    }else
+    {
+        ofLogError(__func__) << "FILE FAIL filePath: " << filePath; 
+    }
+    return didWrite;
+}
 
 VideoEncoder::~VideoEncoder()
 {
+    
     if(encoder)
     {
         MMAL_STATUS_T status = mmal_component_destroy(encoder);
         MMAL_TRACE(status, "Destroy encoder");
     }
+    
+    
 }
 
 MMAL_PORT_T* VideoEncoder::getInputPort()

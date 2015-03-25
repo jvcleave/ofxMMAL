@@ -23,8 +23,13 @@ public:
     ~VideoCamera();
     void close();
     void setup();
+    
+    void startRecording();
+    void stopRecording();
     CameraSettings cameraSettings;
     MMAL_STATUS_T create_camera_component();
+
+    
     
     static void camera_control_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buffer);
     
@@ -49,7 +54,6 @@ public:
     MMAL_PORT_T* preview_port;
     MMAL_PORT_T* video_port;
     MMAL_PORT_T* still_port;
-    MMAL_PORT_T* encoder_port;
     //PORT_USERDATA callback_data;        /// Used to move data to the encoder callback
     
 
@@ -59,5 +63,11 @@ public:
     int sensor_mode;			            /// Sensor mode. 0=auto. Check docs/forum for modes selected by other values.
     bool wantPreview;
 private:
+      
+    void onUpdateDuringExit(ofEventArgs& args);
+    void addExitHandler();
+    bool hasExitHandler;
     bool hasClosed;
+    static void signal_handler(int signum);
+    static bool doExit;
 };

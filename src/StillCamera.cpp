@@ -435,19 +435,19 @@ void StillCamera::encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_
 
 
 
-bool doExit = false;
 
-inline
-void signal_handler(int signum)
+bool StillCamera::doExit = false;
+
+void StillCamera::signal_handler(int signum)
 {
     cout << "StillCamera caught signal " << signum;
-    doExit = true;
+    StillCamera::doExit = true;
 }
 
 inline
 void StillCamera::onUpdateDuringExit(ofEventArgs& args)
 {
-    if (doExit)
+    if (StillCamera::doExit)
     {
         ofLogVerbose(__func__) << " EXITING VIA SIGNAL";
         close();
@@ -471,7 +471,7 @@ void StillCamera::addExitHandler()
         
         //Struct for the new action associated to the SIGNAL_TO_BLOCK
         struct sigaction new_action;
-        new_action.sa_handler = signal_handler;
+        new_action.sa_handler = StillCamera::signal_handler;
         
         //Empty the sa_mask. This means that no signal is blocked while the signal_handler runs.
         sigemptyset(&new_action.sa_mask);
